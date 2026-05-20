@@ -175,6 +175,8 @@ def download_youtube_video(url, output_dir, progress_callback=None):
         "yt_dlp",
         "-f",
         "b[ext=mp4]/best",
+        "--js-runtimes",
+        "node",
         "--no-simulate",
         "-o",
         str(output_template),
