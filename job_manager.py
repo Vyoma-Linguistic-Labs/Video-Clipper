@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import json
-import threading
+import argparse
+import os
+import subprocess
+import sys
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,7 +22,6 @@ class ChapterJob:
     def __init__(self, run_dir):
         self.run_dir = Path(run_dir)
         self.status_path = self.run_dir / "job.json"
-        self._lock = threading.Lock()
 
     def _write(self, data):
         temporary = self.status_path.with_suffix(".partial")
@@ -30,11 +32,10 @@ class ChapterJob:
         return json.loads(self.status_path.read_text(encoding="utf-8"))
 
     def update(self, **changes):
-        with self._lock:
-            state = self.read()
-            state.update(changes)
-            state["updated_at"] = _now()
-            self._write(state)
+        state = self.read()
+        state.update(changes)
+        state["updated_at"] = _now()
+        self._write(state)
 
     @classmethod
     def create(cls, run_dir, source_path, timestamp_text, intro_path=None, outro_path=None, fast_copy=False):
@@ -49,7 +50,14 @@ class ChapterJob:
         return job
 
     def start(self):
-        threading.Thread(target=self._run, daemon=True, name=f"video-job-{self.run_dir.name}").start()
+        """Detach rendering from Streamlit so browser/server reruns do not kill it."""
+        command = [sys.executable, str(Path(__file__).resolve()), "--run", str(self.run_dir)]
+        kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+        if os.name == "nt":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs["start_new_session"] = True
+        subprocess.Popen(command, **kwargs)
 
     def _run(self):
         try:
@@ -91,3 +99,10 @@ def cleanup_completed_jobs(root, days=7):
         state = json.loads(status.read_text(encoding="utf-8")).get("state")
         if state in {"completed", "failed"}:
             shutil.rmtree(child)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run one persisted Video Clipper job.")
+    parser.add_argument("--run", required=True, help="Path to the job directory")
+    arguments = parser.parse_args()
+    ChapterJob(arguments.run)._run()

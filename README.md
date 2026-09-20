@@ -17,7 +17,7 @@ The server accepts uploads up to 4 GB by default (`.streamlit/config.toml`). Tha
 ## Reliability model
 
 - FFmpeg, rather than MoviePy, decodes and encodes video. Each chapter is a separate invocation with a persistent `*.ffmpeg.log` file.
-- A local background job saves state in `streamlit_workdir/jobs/<job-id>/job.json`; browser refreshes do not terminate rendering.
+- An independent local worker process saves state in `streamlit_workdir/jobs/<job-id>/job.json`; browser and Streamlit-server reruns do not terminate rendering.
 - Uploads, outputs, and ZIP archives stay on disk. The UI does not build a second in-memory list of all rendered files.
 - Jobs check available storage before rendering. Keep at least several times the total input size free for source copies, temporary files, output, and a ZIP.
 - Output is written to a `.partial.mp4` file and renamed only after FFmpeg succeeds.
