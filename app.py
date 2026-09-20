@@ -1,278 +1,127 @@
-import io
-import zipfile
+"""Local, disk-backed Streamlit interface for Video Chapter Clipper."""
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
 import streamlit as st
 
-from clipper_main import (
-    download_youtube_video,
-    parse_timestamps,
-    split_and_stitch_video,
-    time_to_seconds,
-)
+from clipper_main import download_youtube_video, parse_timestamps, time_to_seconds
+from job_manager import ChapterJob, cleanup_completed_jobs
+from video_processing import probe_video
 
-
-st.set_page_config(
-    page_title="Video Chapter Clipper",
-    page_icon=":movie_camera:",
-    layout="wide",
-)
-
-
+st.set_page_config(page_title="Video Chapter Clipper", page_icon=":movie_camera:", layout="wide")
+WORK_DIR = Path("streamlit_workdir")
+UPLOAD_DIR, JOB_DIR = WORK_DIR / "uploads", WORK_DIR / "jobs"
 SAMPLE_TIMESTAMPS = """00:00 Introduction and setup
 01:45 Deep dive into data preprocessing
 12:30 Training the model architecture
 24:15 Evaluating the validation results
 35:02 Q&A and final thoughts"""
 
-WORK_DIR = Path("streamlit_workdir")
-DOWNLOAD_DIR = WORK_DIR / "downloads"
-UPLOAD_DIR = WORK_DIR / "uploads"
-OUTPUT_DIR = WORK_DIR / "outputs"
 
-
-def save_uploaded_file(uploaded_file, destination_dir):
+def save_upload(uploaded_file, destination_dir):
+    """Copy incrementally to disk; do not retain an additional Python byte copy."""
     if uploaded_file is None:
         return None
-
-    destination = Path(destination_dir) / uploaded_file.name
-    with destination.open("wb") as file:
-        file.write(uploaded_file.getbuffer())
+    destination = Path(destination_dir) / Path(uploaded_file.name).name
+    with destination.open("wb") as target:
+        while chunk := uploaded_file.read(8 * 1024 * 1024):
+            target.write(chunk)
     return destination
 
 
-def build_zip(files):
-    archive = io.BytesIO()
-    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zip_file:
-        for file_name, file_bytes in files:
-            zip_file.writestr(file_name, file_bytes)
-    archive.seek(0)
-    return archive.getvalue()
+def chapter_preview(text):
+    return [{"#": index, "Start": item["time"], "Seconds": time_to_seconds(item["time"]), "Output": item["title"]}
+            for index, item in enumerate(parse_timestamps(text), start=1)]
 
 
-def render_chapter_preview(timestamp_text):
-    chapters = parse_timestamps(timestamp_text)
-    if not chapters:
-        return []
-
-    preview_rows = []
-    for index, chapter in enumerate(chapters, start=1):
-        preview_rows.append(
-            {
-                "#": index,
-                "Start": chapter["time"],
-                "Seconds": time_to_seconds(chapter["time"]),
-                "Output title": chapter["title"],
-            }
-        )
-    return preview_rows
+def load_job():
+    run_dir = st.session_state.get("job_dir")
+    if not run_dir:
+        return None, None
+    job = ChapterJob(run_dir)
+    try:
+        return job, job.read()
+    except (FileNotFoundError, ValueError):
+        return None, None
 
 
-if "clip_results" not in st.session_state:
-    st.session_state.clip_results = []
-if "zip_results" not in st.session_state:
-    st.session_state.zip_results = None
-if "downloaded_source_path" not in st.session_state:
-    st.session_state.downloaded_source_path = None
-if "last_output_dir" not in st.session_state:
-    st.session_state.last_output_dir = None
-
-
-st.markdown(
-    """
-    <style>
-        .block-container {
-            padding-top: 2rem;
-            padding-bottom: 3rem;
-            max-width: 1180px;
-        }
-        div[data-testid="stMetricValue"] {
-            font-size: 1.45rem;
-        }
-        section[data-testid="stSidebar"] {
-            min-width: 320px;
-        }
-        .stButton > button {
-            width: 100%;
-            min-height: 3rem;
-            font-weight: 700;
-        }
-        .stDownloadButton > button {
-            width: 100%;
-        }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
+cleanup_completed_jobs(JOB_DIR)
+if "job_dir" not in st.session_state:
+    st.session_state.job_dir = None
 
 st.title("Video Chapter Clipper")
+st.caption("Jobs run locally in a background worker. You can safely refresh the page; outputs and FFmpeg logs remain on disk.")
 
 with st.sidebar:
-    st.header("Output")
+    st.header("Reliability")
     include_intro = st.toggle("Use intro video", value=True)
     include_outro = st.toggle("Use outro video", value=True)
-    st.divider()
-    st.caption("Local processing uses your machine's CPU and disk.")
+    fast_copy = st.toggle("Fast cuts", value=False, help="Uses stream copy: much faster, but cuts land on nearby keyframes rather than exact frames.")
+    st.caption("Completed jobs are cleaned after seven days. Keep several times the source size free on disk.")
 
-
-source_mode = st.radio(
-    "Main source",
-    ["Upload video", "YouTube link"],
-    horizontal=True,
-)
-
+source_mode = st.radio("Main source", ["Upload video", "YouTube link"], horizontal=True)
 if source_mode == "Upload video":
-    main_upload = st.file_uploader(
-        "Main video",
-        type=["mp4", "mov", "mkv", "webm", "m4v"],
-        accept_multiple_files=False,
-    )
+    main_upload = st.file_uploader("Main video", type=["mp4", "mov", "mkv", "webm", "m4v"])
     youtube_url = ""
 else:
     main_upload = None
-    youtube_url = st.text_input("YouTube URL", placeholder="https://www.youtube.com/watch?v=...")
+    youtube_url = st.text_input("YouTube URL", placeholder="https://www.youtube.com/watch?v=...").strip()
+left, right = st.columns([1.15, 0.85], gap="large")
+with left:
+    timestamp_text = st.text_area("Description or timestamps", value=SAMPLE_TIMESTAMPS, height=260)
+with right:
+    intro_upload = st.file_uploader("Intro video", type=["mp4", "mov", "mkv", "webm", "m4v"], disabled=not include_intro)
+    outro_upload = st.file_uploader("Outro video", type=["mp4", "mov", "mkv", "webm", "m4v"], disabled=not include_outro)
 
-left_column, right_column = st.columns([1.15, 0.85], gap="large")
-
-with left_column:
-    timestamp_text = st.text_area(
-        "Description or timestamps",
-        value=SAMPLE_TIMESTAMPS,
-        height=260,
-    )
-
-with right_column:
-    intro_upload = st.file_uploader(
-        "Intro video",
-        type=["mp4", "mov", "mkv", "webm", "m4v"],
-        disabled=not include_intro,
-        accept_multiple_files=False,
-    )
-    outro_upload = st.file_uploader(
-        "Outro video",
-        type=["mp4", "mov", "mkv", "webm", "m4v"],
-        disabled=not include_outro,
-        accept_multiple_files=False,
-    )
-
-
-chapters = render_chapter_preview(timestamp_text)
-metric_columns = st.columns(3)
-metric_columns[0].metric("Chapters", len(chapters))
-metric_columns[1].metric("Intro", "On" if include_intro and intro_upload else "Off")
-metric_columns[2].metric("Outro", "On" if include_outro and outro_upload else "Off")
-
+chapters = chapter_preview(timestamp_text)
+st.metric("Chapters", len(chapters))
 if chapters:
-    with st.expander("Chapter preview", expanded=True):
-        st.dataframe(chapters, hide_index=True, use_container_width=True)
+    st.dataframe(chapters, hide_index=True, use_container_width=True)
 else:
-    st.warning("No timestamps detected yet.")
+    st.warning("Enter at least one valid MM:SS or HH:MM:SS timestamp.")
 
-
-selected_youtube_url = youtube_url.strip()
-has_main_source = main_upload is not None or bool(selected_youtube_url)
-process_disabled = not has_main_source or not chapters
-
-process_button = st.button(
-    "Create clips",
-    type="primary",
-    disabled=process_disabled,
-)
-
-if process_button:
-    st.session_state.clip_results = []
-    st.session_state.zip_results = None
-    st.session_state.downloaded_source_path = None
-    st.session_state.last_output_dir = None
-
-    progress_bar = st.progress(0)
-    status_box = st.empty()
-
-    def update_render_progress(current, total, message):
-        percent = min(100, int((current / max(total, 1)) * 100))
-        progress_bar.progress(percent)
-        status_box.info(message)
-
-    def update_download_status(message):
-        progress_bar.progress(5)
-        status_box.info(message)
-
+if st.button("Create clips", type="primary", disabled=not ((main_upload or youtube_url) and chapters)):
+    run_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:8]}"
+    input_dir, run_dir = UPLOAD_DIR / run_id, JOB_DIR / run_id
+    input_dir.mkdir(parents=True, exist_ok=False)
     try:
-        run_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:8]}"
-        input_dir = UPLOAD_DIR / run_id
-        download_dir = DOWNLOAD_DIR / run_id
-        output_dir = OUTPUT_DIR / run_id
-        input_dir.mkdir(parents=True, exist_ok=True)
-        download_dir.mkdir(parents=True, exist_ok=True)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        main_path = download_youtube_video(youtube_url, input_dir) if youtube_url else save_upload(main_upload, input_dir)
+        intro_path = save_upload(intro_upload, input_dir) if include_intro else None
+        outro_path = save_upload(outro_upload, input_dir) if include_outro else None
+        probe_video(main_path)  # fail before a long-running job starts
+        job = ChapterJob.create(run_dir, main_path, timestamp_text, intro_path, outro_path, fast_copy)
+        job.start()
+        st.session_state.job_dir = str(run_dir)
+        st.rerun()
+    except Exception as exc:
+        st.error(str(exc))
 
-        if selected_youtube_url:
-            main_video_path = download_youtube_video(
-                selected_youtube_url,
-                download_dir,
-                progress_callback=update_download_status,
-            )
-            st.session_state.downloaded_source_path = str(main_video_path.resolve())
-            status_box.info(f"Downloaded to: {main_video_path.resolve()}")
-        else:
-            status_box.info("Saving uploaded video...")
-            main_video_path = save_uploaded_file(main_upload, input_dir)
-
-        intro_path = (
-            save_uploaded_file(intro_upload, input_dir)
-            if include_intro and intro_upload
-            else None
-        )
-        outro_path = (
-            save_uploaded_file(outro_upload, input_dir)
-            if include_outro and outro_upload
-            else None
-        )
-
-        output_paths = split_and_stitch_video(
-            video_path=main_video_path,
-            timestamp_text=timestamp_text,
-            intro_path=intro_path,
-            outro_path=outro_path,
-            output_dir=output_dir,
-            progress_callback=update_render_progress,
-        )
-
-        results = []
-        for output_path in output_paths:
-            results.append((output_path.name, output_path.read_bytes()))
-
-        st.session_state.clip_results = results
-        st.session_state.zip_results = build_zip(results)
-        st.session_state.last_output_dir = str(output_dir.resolve())
-        progress_bar.progress(100)
-        status_box.success("Clips created.")
-    except Exception as error:
-        progress_bar.empty()
-        status_box.error(str(error))
-
-
-if st.session_state.clip_results:
-    st.subheader("Downloads")
-    if st.session_state.downloaded_source_path:
-        st.info(f"YouTube source saved at: {st.session_state.downloaded_source_path}")
-    if st.session_state.last_output_dir:
-        st.info(f"Rendered clips saved at: {st.session_state.last_output_dir}")
-
-    st.download_button(
-        "Download all clips as ZIP",
-        data=st.session_state.zip_results,
-        file_name="video_chapters.zip",
-        mime="application/zip",
-    )
-
-    for file_name, file_bytes in st.session_state.clip_results:
-        st.download_button(
-            file_name,
-            data=file_bytes,
-            file_name=file_name,
-            mime="video/mp4",
-        )
+job, status = load_job()
+if status:
+    st.divider()
+    st.subheader("Current job")
+    st.progress(int(status.get("progress", 0)))
+    st.write(f"**{status['state'].title()}** — {status.get('message', '')}")
+    if status["state"] in {"queued", "running"}:
+        st.caption("Use Refresh status while the local worker renders. Closing the browser does not stop the job.")
+        if st.button("Refresh status"):
+            st.rerun()
+    if status["state"] == "failed":
+        st.error(status["message"])
+        st.code(status.get("traceback", ""), language="text")
+    if status["state"] == "completed":
+        output_paths = [Path(path) for path in status.get("outputs", []) if Path(path).exists()]
+        if output_paths:
+            zip_path = Path(st.session_state.job_dir) / "video_chapters.zip"
+            if not zip_path.exists():
+                import zipfile
+                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+                    for output_path in output_paths:
+                        archive.write(output_path, output_path.name)
+            with zip_path.open("rb") as archive:
+                st.download_button("Download all clips as ZIP", data=archive, file_name=zip_path.name, mime="application/zip")
+            for output_path in output_paths:
+                with output_path.open("rb") as video:
+                    st.download_button(output_path.name, data=video, file_name=output_path.name, mime="video/mp4")
+        st.caption(f"Logs and outputs: {status['log_dir']}")
