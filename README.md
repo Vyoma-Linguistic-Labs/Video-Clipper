@@ -21,7 +21,8 @@ The server accepts uploads up to 4 GB by default (`.streamlit/config.toml`). Tha
 - Uploads, outputs, and ZIP archives stay on disk. The UI does not build a second in-memory list of all rendered files.
 - Jobs check available storage before rendering. Keep at least several times the total input size free for source copies, temporary files, output, and a ZIP.
 - Output is written to a `.partial.mp4` file and renamed only after FFmpeg succeeds.
-- The **Fast cuts** option uses stream copy for keyframe-aligned cuts; leave it off for frame-accurate cuts or when using intro/outro.
+- **Preserve original video and audio** is the default for plain splits: it uses FFmpeg stream copy (`-c copy`), so the encoded video and audio streams are not re-encoded or degraded. Because encoded video is organized around keyframes, boundaries can land near rather than exactly on the chosen timestamp.
+- When an intro/outro is used—or preservation is turned off—the app makes frame-accurate, visually-lossless output: H.264 CRF 16 with the slow preset and AAC at 320 kbps. This retains the main source resolution and transfers container metadata, but cannot be byte-identical because composition requires decoding and encoding.
 - Completed and failed job directories are removed after seven days. Copy any files you need before then.
 
 ## Troubleshooting

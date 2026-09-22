@@ -38,13 +38,13 @@ class ChapterJob:
         self._write(state)
 
     @classmethod
-    def create(cls, run_dir, source_path, timestamp_text, intro_path=None, outro_path=None, fast_copy=False):
+    def create(cls, run_dir, source_path, timestamp_text, intro_path=None, outro_path=None, preserve_original=True):
         job = cls(run_dir)
         job.run_dir.mkdir(parents=True, exist_ok=False)
         job._write({
             "state": "queued", "created_at": _now(), "updated_at": _now(), "source_path": str(source_path),
             "timestamp_text": timestamp_text, "intro_path": str(intro_path) if intro_path else None,
-            "outro_path": str(outro_path) if outro_path else None, "fast_copy": fast_copy, "progress": 0,
+            "outro_path": str(outro_path) if outro_path else None, "preserve_original": preserve_original, "progress": 0,
             "message": "Queued", "outputs": [], "log_dir": str(job.run_dir),
         })
         return job
@@ -77,7 +77,7 @@ class ChapterJob:
                 def report(rendered_seconds, index=index, start=start, end=end):
                     fraction = (index + min(1.0, rendered_seconds / max(end - start, 0.01))) / len(chapters)
                     self.update(progress=round(fraction * 100, 1))
-                if state["fast_copy"] and not state.get("intro_path") and not state.get("outro_path"):
+                if state["preserve_original"] and not state.get("intro_path") and not state.get("outro_path"):
                     result = copy_chapter_fast(state["source_path"], start, end, output_path, self.run_dir)
                 else:
                     result = render_chapter(state["source_path"], start, end, output_path, self.run_dir, state.get("intro_path"), state.get("outro_path"), report)

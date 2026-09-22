@@ -55,9 +55,15 @@ st.caption("Jobs run locally in a background worker. You can safely refresh the 
 
 with st.sidebar:
     st.header("Reliability")
-    include_intro = st.toggle("Use intro video", value=True)
-    include_outro = st.toggle("Use outro video", value=True)
-    fast_copy = st.toggle("Fast cuts", value=False, help="Uses stream copy: much faster, but cuts land on nearby keyframes rather than exact frames.")
+    include_intro = st.toggle("Use intro video", value=False)
+    include_outro = st.toggle("Use outro video", value=False)
+    preserve_original = st.toggle(
+        "Preserve original video and audio",
+        value=True,
+        disabled=include_intro or include_outro,
+        help="For plain splits, copies the original encoded streams without quality loss. Cuts align to nearby keyframes.",
+    )
+    st.caption("Turn off intro/outro to use bit-for-bit stream copy. Frame-accurate cuts and stitching use visually-lossless re-encoding.")
     st.caption("Completed jobs are cleaned after seven days. Keep several times the source size free on disk.")
 
 source_mode = st.radio("Main source", ["Upload video", "YouTube link"], horizontal=True)
@@ -90,7 +96,7 @@ if st.button("Create clips", type="primary", disabled=not ((main_upload or youtu
         intro_path = save_upload(intro_upload, input_dir) if include_intro else None
         outro_path = save_upload(outro_upload, input_dir) if include_outro else None
         probe_video(main_path)  # fail before a long-running job starts
-        job = ChapterJob.create(run_dir, main_path, timestamp_text, intro_path, outro_path, fast_copy)
+        job = ChapterJob.create(run_dir, main_path, timestamp_text, intro_path, outro_path, preserve_original)
         job.start()
         st.session_state.job_dir = str(run_dir)
         st.rerun()

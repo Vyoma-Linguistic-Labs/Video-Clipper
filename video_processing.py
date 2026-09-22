@@ -54,6 +54,8 @@ def probe_video(path):
         "width": int(video["width"]),
         "height": int(video["height"]),
         "has_audio": any(stream.get("codec_type") == "audio" for stream in streams),
+        "video_codec": video.get("codec_name"),
+        "audio_codec": next((stream.get("codec_name") for stream in streams if stream.get("codec_type") == "audio"), None),
     }
 
 
@@ -147,9 +149,11 @@ def render_chapter(source_path, start, end, output_path, work_dir, intro_path=No
     filters.append("".join(labels) + f"concat=n={len(assets)}:v=1:a=1[v][a]")
     temporary = output_path.with_suffix(".partial.mp4")
     command.extend([
-        "-filter_complex", ";".join(filters), "-map", "[v]", "-map", "[a]",
-        "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-c:a", "aac", "-b:a", "192k",
-        "-movflags", "+faststart", "-progress", "pipe:1", str(temporary),
+        "-filter_complex", ";".join(filters), "-map", "[v]", "-map", "[a]", "-map_metadata", "0",
+        # Frame-accurate composition cannot remain byte-identical. These settings
+        # aim for visually lossless video and transparent high-bitrate AAC audio.
+        "-c:v", "libx264", "-preset", "slow", "-crf", "16", "-fps_mode", "passthrough",
+        "-c:a", "aac", "-b:a", "320k", "-movflags", "+faststart", "-progress", "pipe:1", str(temporary),
     ])
     _run_ffmpeg(command, progress_callback, work_dir / f"{output_path.stem}.ffmpeg.log")
     temporary.replace(output_path)
@@ -157,13 +161,13 @@ def render_chapter(source_path, start, end, output_path, work_dir, intro_path=No
 
 
 def copy_chapter_fast(source_path, start, end, output_path, work_dir):
-    """Fast keyframe-aligned cut; intentionally opt-in because it is not frame exact."""
+    """Bit-for-bit stream copy; cuts must align to keyframes rather than exact frames."""
     output_path, work_dir = Path(output_path), Path(work_dir)
     temporary = output_path.with_suffix(".partial.mp4")
     command = [
         ffmpeg_executable(), "-y", "-hide_banner", "-ss", f"{start:.6f}", "-to", f"{end:.6f}",
-        "-i", str(source_path), "-map", "0", "-c", "copy", "-avoid_negative_ts", "make_zero",
-        "-movflags", "+faststart", str(temporary),
+        "-i", str(source_path), "-map", "0", "-map_metadata", "0", "-c", "copy",
+        "-avoid_negative_ts", "make_zero", "-movflags", "+faststart", str(temporary),
     ]
     _run_ffmpeg(command, None, work_dir / f"{output_path.stem}.ffmpeg.log")
     temporary.replace(output_path)
