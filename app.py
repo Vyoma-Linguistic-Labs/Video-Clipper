@@ -42,7 +42,7 @@ def load_job():
     job = ChapterJob(run_dir)
     try:
         return job, job.read()
-    except (FileNotFoundError, ValueError):
+    except (FileNotFoundError, PermissionError, ValueError):
         return None, None
 
 

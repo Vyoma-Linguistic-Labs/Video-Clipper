@@ -6,12 +6,16 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
 from clipper_main import parse_timestamps, time_to_seconds, validate_chapters
 from video_processing import VideoProcessingError, copy_chapter_fast, ensure_free_space, probe_video, render_chapter
+
+STATUS_RETRY_COUNT = 40
+STATUS_RETRY_DELAY_SECONDS = 0.05
 
 
 def _now():
@@ -26,10 +30,30 @@ class ChapterJob:
     def _write(self, data):
         temporary = self.status_path.with_suffix(".partial")
         temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        temporary.replace(self.status_path)
+        # Windows does not allow os.replace while another process has the
+        # destination file open. Streamlit can briefly hold it while refreshing.
+        for attempt in range(STATUS_RETRY_COUNT):
+            try:
+                temporary.replace(self.status_path)
+                return
+            except PermissionError:
+                if attempt == STATUS_RETRY_COUNT - 1:
+                    raise
+                time.sleep(STATUS_RETRY_DELAY_SECONDS)
 
     def read(self):
-        return json.loads(self.status_path.read_text(encoding="utf-8"))
+        # The status file is atomically replaced by the worker. Retry on Windows
+        # sharing violations and during a narrow replace/read race.
+        last_error = None
+        for attempt in range(STATUS_RETRY_COUNT):
+            try:
+                return json.loads(self.status_path.read_text(encoding="utf-8"))
+            except (FileNotFoundError, PermissionError, json.JSONDecodeError) as error:
+                last_error = error
+                if attempt == STATUS_RETRY_COUNT - 1:
+                    raise
+                time.sleep(STATUS_RETRY_DELAY_SECONDS)
+        raise last_error  # defensive; the loop always returns or raises
 
     def update(self, **changes):
         state = self.read()
@@ -96,7 +120,11 @@ def cleanup_completed_jobs(root, days=7):
         status = child / "job.json"
         if not child.is_dir() or not status.exists() or child.stat().st_mtime >= cutoff:
             continue
-        state = json.loads(status.read_text(encoding="utf-8")).get("state")
+        try:
+            state = ChapterJob(child).read().get("state")
+        except (FileNotFoundError, PermissionError, json.JSONDecodeError):
+            # A currently running worker may be replacing job.json; skip it.
+            continue
         if state in {"completed", "failed"}:
             shutil.rmtree(child)
 
