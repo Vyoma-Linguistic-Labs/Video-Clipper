@@ -29,4 +29,6 @@ The server accepts uploads up to 4 GB by default (`.streamlit/config.toml`). Tha
 
 If a job fails, open its job directory shown in the UI and inspect the adjacent `.ffmpeg.log` file. The UI also displays FFmpeg's final error and Python traceback. On Windows, prevent sleep while encoding and ensure antivirus exclusions do not quarantine the working directory.
 
+If your organization uses Windows AppLocker or Windows Defender Application Control, it may block PyArrow's native DLLs in a virtual environment. The chapter preview deliberately uses ordinary Markdown rather than Streamlit's dataframe component, so PyArrow is not required for this application path. If an application-control policy still blocks Python or FFmpeg, ask IT to approve the installed Python environment and FFmpeg executable rather than disabling the policy.
+
 For reproducible installations, record the Python and FFmpeg versions used by a successful test machine. Test real long media, low-disk conditions, interruption/restart behavior, no-audio input, and all target codecs before deploying to colleagues.

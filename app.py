@@ -35,6 +35,13 @@ def chapter_preview(text):
             for index, item in enumerate(parse_timestamps(text), start=1)]
 
 
+def render_chapter_preview(rows):
+    """Render without st.dataframe, which imports PyArrow native DLLs on Windows."""
+    lines = ["| # | Start | Output |", "| --- | --- | --- |"]
+    lines.extend(f"| {row['#']} | {row['Start']} | {row['Output']} |" for row in rows)
+    st.markdown("\n".join(lines))
+
+
 def load_job():
     run_dir = st.session_state.get("job_dir")
     if not run_dir:
@@ -83,7 +90,7 @@ with right:
 chapters = chapter_preview(timestamp_text)
 st.metric("Chapters", len(chapters))
 if chapters:
-    st.dataframe(chapters, hide_index=True, use_container_width=True)
+    render_chapter_preview(chapters)
 else:
     st.warning("Enter at least one valid MM:SS or HH:MM:SS timestamp.")
 
